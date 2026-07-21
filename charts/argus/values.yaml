@@ -20,6 +20,46 @@ forwarder:
   dedupeTtlSec: 3600
   logLevel: INFO
 
+  # --- Phase 2: multi-channel routing ---
+  # Maps severity → Discord channel webhook URL. The alert-responder
+  # GCP secret (monitoring-alert-responder, reused via remoteKey) carries
+  # multiple webhook URLs keyed by channel; nixlab's external-secrets
+  # template projects them as env. For standalone installs, set each
+  # webhook URL directly here via templated secretKeyRef.
+  #
+  # unset = no post to that channel; default is the fallback.
+  discordChannels:
+    default: ""   # DISCORD_WEBHOOK_DEFAULT — required fallback
+    critical: ""  # DISCORD_WEBHOOK_CRITICAL
+    warning: ""   # DISCORD_WEBHOOK_WARNING
+    info: ""      # DISCORD_WEBHOOK_INFO (empty = skip info channel)
+    deals: ""     # DISCORD_WEBHOOK_DEALS
+
+  # --- Phase 3: project-agnostic repo mapping ---
+  # Maps k8s namespace → GitHub repo (owner/repo). Holmes uses this to
+  # know where to open fix PRs. `default` is the fallback for unmapped
+  # namespaces.
+  repoMappings:
+    default: ""
+    # nixlab is the cluster owner — most alerts route here.
+    monitoring: "olivecasazza/nixlab"
+    apps: "olivecasazza/nixlab"
+    kube-system: "olivecasazza/nixlab"
+    flux-system: "olivecasazza/nixlab"
+    games: "olivecasazza/nixlab"
+    # Add per-app repos when the fix lives in the app, not the cluster:
+    # "apps/stitch-ash": "olivecasazza/stitch-ash"
+
+  forwarderSecret:
+    name: argus-forwarder
+    key: DISCORD_WEBHOOK
+
+  # Discord webhook for the default channel. Secret-sourced. The per-channel
+  # webhooks below, when set, override this for that severity.
+  discordSecret:
+    name: argus-forwarder
+    key: DISCORD_WEBHOOK
+
   # Forwarder has NO cluster RBAC — Holmes owns the investigation tools.
   serviceAccount:
     create: true
@@ -37,11 +77,11 @@ forwarder:
   tolerations: []
   affinity: {}
 
-  # Discord webhook is secret-sourced. The referenced Secret must contain
-  # a `DISCORD_WEBHOOK` key. nixlab provisions it via GCP Secret Manager + ESO.
-  discordSecret:
-    name: argus-forwarder
-    key: DISCORD_WEBHOOK
+# --- Argus-managed custom skills (phase 5: alert-tuning) ---
+# Passed to the holmes subchart via customSkills, which auto-mounts them
+# at /etc/holmes/skills/ and registers them on CUSTOM_SKILL_PATHS.
+argusSkills:
+  enabled: true
 
 # --- Holmes subchart override ---
 # HolmesGPT itself. We point it at the in-cluster omniroute gateway
@@ -79,6 +119,44 @@ holmes:
       enabled: true
       config:
         builtin_allowlist: "extended"
+
+  # Argus custom skills mounted into the Holmes pod via a ConfigMap built
+  # from files/skills/*/SKILL.md (see templates/holmes-skills-configmap.yaml).
+  # The ConfigMap is mounted read-only and registered on holmes's
+  # customSkillPaths so Holmes auto-discovers and matches skills.
+  #
+  # ConfigMap name is static (argus-holmes-skills) so values.yaml can
+  # reference it without template syntax; the ConfigMap template uses
+  # the same fixed name.
+  customSkillPaths:
+    - /etc/argus-skills
+  additionalVolumes:
+    - name: argus-skills
+      configMap:
+        name: argus-holmes-skills
+  additionalVolumeMounts:
+    - name: argus-skills
+      mountPath: /etc/argus-skills
+      readOnly: true
+
+  # --- Phase 3: GitHub MCP addon (opens PRs against mapped repos) ---
+  # Needs a PAT with `repo` scope on the mapped repos, stored in a Secret.
+  # For nixlab this is `apps-argus-github` (key `token`) — provisioned
+  # via GCP Secret Manager + ESO.
+  mcpAddons:
+    github:
+      enabled: false  # flip via nixlab values once the PAT is provisioned
+      auth:
+        secretName: argus-github
+        secretKey: token
+      config:
+        toolsets: "repos,issues,pull_requests,actions,context"
+
+  # --- Holmes operator mode ---
+  # Watches HealthCheck CRDs and reconciles — lets us schedule proactive
+  # checks in addition to reactive webhook-driven triage.
+  operator:
+    enabled: false  # opt-in; enable once triage quality is trusted
 
   # Point Holmes at omniroute (OpenAI-compatible gateway).
   # `auto` is omniroute's virtual model ID — LKGP-scored across providers.

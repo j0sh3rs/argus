@@ -42,6 +42,27 @@
             "key": { "type": "string" }
           },
           "required": ["name", "key"]
+        },
+        "forwarderSecret": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "key": { "type": "string" }
+          }
+        },
+        "discordChannels": {
+          "type": "object",
+          "properties": {
+            "default": { "type": "string" },
+            "critical": { "type": "string" },
+            "warning": { "type": "string" },
+            "info": { "type": "string" },
+            "deals": { "type": "string" }
+          }
+        },
+        "repoMappings": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
         }
       },
       "required": ["image", "holmesUrl", "holmesModel", "discordSecret"]

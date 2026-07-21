@@ -1,18 +1,23 @@
-"""Argus forwarder — Alertmanager -> HolmesGPT -> Discord.
+"""Argus forwarder — Alertmanager -> HolmesGPT -> Discord (multi-channel).
 
-Receives Alertmanager webhook POSTs, asks HolmesGPT (via its /api/chat
-endpoint) to investigate each firing alert, and posts the triage summary
-to a Discord webhook.
+Phase 2: Routes triage to Discord channels by severity
+  (critical/warning/info/deals) instead of a single firehose.
 
-Why this exists: HolmesGPT has no Discord sink — Robusta deliberately gates
-Slack/Teams behind their SaaS. This forwarder is the thin glue that wires
-Holmes's investigation to Discord, replacing the 470-line custom tool-loop
-in nixlab's old alert-responder (whose entire ALLOWED_PREFIXES / tool_shell
-machinery was dead code — only the Paperclip delegation path was live).
+Phase 3: Resolves the alert's namespace to a GitHub repo via REPO_MAPPINGS
+  and instructs Holmes to open a PR if it can identify a concrete fix.
+  Holmes's github MCP addon (enabled in chart values) does the actual PR
+  creation; this forwarder only injects the target repo into the prompt.
+
+Phase 5: Asks Holmes to also assess alert tuning (firing frequency, false-
+  positive pattern) and propose PrometheusRule edits if warranted. The
+  detailed procedure lives in the mounted alert-tuning SKILL.md.
+
+Phase 4 (HITL approve/disapprove via Discord buttons) is deferred until a
+  Discord bot token is provisioned — see argus.nix comment.
 
 Safety: the forwarder has NO cluster access. HolmesGPT owns the read-only
-RBAC (view ClusterRole via its Helm subchart). This service only speaks
-HTTP to Holmes and Discord.
+RBAC (view ClusterRole via argus's SA). This service only speaks HTTP to
+Holmes and Discord.
 """
 
 from __future__ import annotations
@@ -37,7 +42,6 @@ log = logging.getLogger("argus-forwarder")
 HOLMES_URL = os.environ.get("HOLMES_URL", "http://argus-holmes:80")
 HOLMES_MODEL = os.environ.get("HOLMES_MODEL", "auto")
 HOLMES_TIMEOUT = int(os.environ.get("HOLMES_TIMEOUT_SEC", "300"))
-DISCORD_WEBHOOK = os.environ["DISCORD_WEBHOOK"]
 INVESTIGATE_SEVERITIES = {
     s.strip().lower()
     for s in os.environ.get("INVESTIGATE_SEVERITIES", "critical,warning").split(",")
@@ -46,7 +50,36 @@ INVESTIGATE_SEVERITIES = {
 DEDUPE_TTL = int(os.environ.get("DEDUPE_TTL_SEC", "3600"))
 DISCORD_MAX = 1900
 
+# --- Phase 2: multi-channel routing --------------------------------------- #
+# Severity → Discord webhook URL. Unmapped severities fall back to DEFAULT.
+# All sourced from env (rendered from values.yaml discordChannels map).
+_DEFAULT_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_DEFAULT", "")
+CHANNEL_WEBHOOKS: dict[str, str] = {
+    "critical": os.environ.get("DISCORD_WEBHOOK_CRITICAL", _DEFAULT_WEBHOOK),
+    "warning": os.environ.get("DISCORD_WEBHOOK_WARNING", _DEFAULT_WEBHOOK),
+    "info": os.environ.get("DISCORD_WEBHOOK_INFO", ""),
+    "deals": os.environ.get("DISCORD_WEBHOOK_DEALS", ""),
+}
+
+# --- Phase 3: project-agnostic repo mapping ------------------------------- #
+# JSON: {"namespace": "owner/repo", ..., "default": "owner/repo"}
+# Rendered from values.yaml repoMappings. Holmes uses this to know where
+# to open fix PRs.
+REPO_MAPPINGS: dict[str, str] = json.loads(os.environ.get("REPO_MAPPINGS", "{}"))
+
 _recent: dict[str, float] = {}
+
+
+def _resolve_webhook(severity: str) -> str:
+    """Pick the Discord webhook for a given alert severity."""
+    return CHANNEL_WEBHOOKS.get(severity, _DEFAULT_WEBHOOK)
+
+
+def _resolve_repo(namespace: str) -> str | None:
+    """Map a k8s namespace to a GitHub repo (owner/repo)."""
+    if not REPO_MAPPINGS:
+        return None
+    return REPO_MAPPINGS.get(namespace) or REPO_MAPPINGS.get("default")
 
 
 # --------------------------------------------------------------------------- #
@@ -79,22 +112,53 @@ def _fingerprint(alert: dict[str, Any]) -> str:
 def _build_prompt(alert: dict[str, Any]) -> str:
     labels = alert.get("labels", {})
     annotations = alert.get("annotations", {})
-    return (
+    namespace = labels.get("namespace", "")
+    repo = _resolve_repo(namespace)
+
+    prompt = (
         "A Prometheus alert is firing in this Kubernetes cluster. "
         "Investigate the root cause using your tools (kubectl, logs, "
         "Prometheus metrics) and produce a terse triage.\n\n"
         f"Alertname: {labels.get('alertname', 'unknown')}\n"
         f"Severity:  {labels.get('severity', 'unknown')}\n"
+        f"Namespace: {namespace or 'n/a'}\n"
         f"Started:   {alert.get('startsAt', 'n/a')}\n\n"
         f"Labels:\n{json.dumps(labels, indent=2)}\n\n"
         f"Annotations:\n{json.dumps(annotations, indent=2)}\n\n"
-        "Output format (keep under ~600 chars):\n"
+        "Output format (keep the triage under ~600 chars):\n"
         "- **Verdict**: real / cascade / transient -- one sentence.\n"
         "- **Root cause**: one or two sentences with concrete evidence "
         "(log lines, metric values).\n"
         "- **Action**: specific -- a command to run or the next diagnostic step.\n"
-        "- **Confidence**: low / medium / high."
+        "- **Confidence**: low / medium / high.\n"
     )
+
+    # Phase 3: if we know which repo owns this namespace, tell Holmes to
+    # open a PR for concrete fixes. Holmes's github MCP addon does the work.
+    if repo:
+        prompt += (
+            f"\n**Proposed fix**: If you can identify a specific code or config "
+            f"fix, open a pull request against `{repo}` using your GitHub tools. "
+            f"Target the repo's default branch. Keep the change minimal and "
+            f"focused. Add a clear PR description linking back to this alert. "
+            f"Include the PR URL in your triage under **Proposed fix**. "
+            f"If the fix is unclear or risky, skip this — do not open "
+            f"speculative PRs.\n"
+        )
+
+    # Phase 5: alert-tuning assessment. Holmes queries Prometheus for firing
+    # history and proposes tuning if the pattern warrants it.
+    prompt += (
+        "\n**Alert tuning**: Also assess whether this alert is well-tuned. "
+        "Query Prometheus for its firing history over the last 7 days "
+        '(use metric `ALERTS{alertname="<name>"}`). If it fires frequently '
+        "with transient or cascade verdicts, propose a severity downgrade, "
+        "threshold adjustment, or `for:` duration increase. If it rarely "
+        "fires but represents real impact, consider a severity upgrade. "
+        "State your tuning recommendation under **Tuning** (or 'no change')."
+    )
+
+    return prompt
 
 
 def _extract_analysis(data: Any) -> str:
@@ -130,7 +194,10 @@ async def _investigate(session: ClientSession, alert: dict[str, Any]) -> str:
 # --------------------------------------------------------------------------- #
 
 
-async def _post_discord(session: ClientSession, content: str) -> None:
+async def _post_discord(session: ClientSession, webhook: str, content: str) -> None:
+    if not webhook:
+        log.debug("no webhook configured for this channel, skipping post")
+        return
     pos = 0
     while pos < len(content):
         chunk = content[pos : pos + DISCORD_MAX]
@@ -138,7 +205,7 @@ async def _post_discord(session: ClientSession, content: str) -> None:
         for attempt in range(3):
             try:
                 resp = await session.post(
-                    DISCORD_WEBHOOK,
+                    webhook,
                     json={"content": chunk, "username": "argus"},
                     timeout=ClientTimeout(total=30),
                 )
@@ -159,6 +226,7 @@ async def _triage(session: ClientSession, alert: dict[str, Any]) -> None:
     alertname = labels.get("alertname", "unknown")
     severity = labels.get("severity", "unknown")
     fp = _fingerprint(alert)
+    webhook = _resolve_webhook(severity)
 
     if _is_duplicate(fp):
         log.info("dedupe %s %s", alertname, fp)
@@ -167,12 +235,14 @@ async def _triage(session: ClientSession, alert: dict[str, Any]) -> None:
     log.info("triage start: %s severity=%s fp=%s", alertname, severity, fp)
     await _post_discord(
         session,
+        webhook,
         f":mag: **Investigating** `{alertname}` ({severity}) `{fp[:12]}`",
     )
 
     analysis = await _investigate(session, alert)
     await _post_discord(
         session,
+        webhook,
         f":white_check_mark: **Triage** `{alertname}`\n{analysis}",
     )
     log.info("triage done: %s (%d chars)", alertname, len(analysis))
@@ -212,8 +282,11 @@ async def _health(_: web.Request) -> web.Response:
 
 
 async def _main() -> None:
-    if not DISCORD_WEBHOOK:
-        raise SystemExit("DISCORD_WEBHOOK not set")
+    if not _DEFAULT_WEBHOOK and not any(CHANNEL_WEBHOOKS.values()):
+        raise SystemExit(
+            "no Discord webhook configured — set DISCORD_WEBHOOK_DEFAULT "
+            "or DISCORD_WEBHOOK_{CRITICAL,WARNING,INFO,DEALS}"
+        )
 
     app = web.Application()
     app["session"] = ClientSession()
@@ -225,12 +298,15 @@ async def _main() -> None:
     site = web.TCPSite(runner, "0.0.0.0", 8080)
     await site.start()
     log.info(
-        "listening :8080 holmes=%s model=%s severities=%s dedupe=%ds timeout=%ds",
+        "listening :8080 holmes=%s model=%s severities=%s dedupe=%ds timeout=%ds "
+        "channels=%s repos=%d",
         HOLMES_URL,
         HOLMES_MODEL,
         INVESTIGATE_SEVERITIES,
         DEDUPE_TTL,
         HOLMES_TIMEOUT,
+        {k: bool(v) for k, v in CHANNEL_WEBHOOKS.items()},
+        len(REPO_MAPPINGS),
     )
 
     stop = asyncio.Event()

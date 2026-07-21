@@ -61,11 +61,29 @@ spec:
               value: {{ .Values.forwarder.dedupeTtlSec | quote }}
             - name: LOG_LEVEL
               value: {{ .Values.forwarder.logLevel | quote }}
-            - name: DISCORD_WEBHOOK
+            # --- Phase 2: multi-channel routing (from discordChannels map) ---
+            # Only emit per-channel env vars when explicitly set — otherwise
+            # the forwarder's os.environ.get(..., default) falls back to
+            # DISCORD_WEBHOOK_DEFAULT for critical/warning and skips info/deals.
+            - name: DISCORD_WEBHOOK_DEFAULT
+              {{- if .Values.forwarder.discordChannels.default }}
+              value: {{ .Values.forwarder.discordChannels.default | quote }}
+              {{- else }}
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.forwarder.discordSecret.name | quote }}
                   key: {{ .Values.forwarder.discordSecret.key | quote }}
+              {{- end }}
+            {{- $chanMap := dict "critical" .Values.forwarder.discordChannels.critical "warning" .Values.forwarder.discordChannels.warning "info" .Values.forwarder.discordChannels.info "deals" .Values.forwarder.discordChannels.deals }}
+            {{- range $k, $v := $chanMap }}
+            {{- if $v }}
+            - name: DISCORD_WEBHOOK_{{ $k | upper }}
+              value: {{ $v | quote }}
+            {{- end }}
+            {{- end }}
+            # --- Phase 3: repo mapping as JSON ---
+            - name: REPO_MAPPINGS
+              value: {{ .Values.forwarder.repoMappings | toJson | quote }}
           ports:
             - name: http
               containerPort: 8080

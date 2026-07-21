@@ -1,0 +1,21 @@
+{{- if .Values.argusSkills.enabled }}
+# Argus custom skills ConfigMap for Holmes.
+#
+# Built from files/skills/*/SKILL.md. Holmes scans the mount path (default
+# /etc/argus-skills, registered via customSkillPaths in values) for SKILL.md
+# files and matches them to issues/alerts at investigation time.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argus-holmes-skills
+  labels:
+    app.kubernetes.io/name: argus
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: holmes
+data:
+  {{- range $path, $_ := .Files.Glob "files/skills/*/SKILL.md" }}
+  {{- $name := $path | dir | base }}
+  {{ $name }}.SKILL.md: |
+{{ $.Files.Get $path | indent 4 }}
+  {{- end }}
+{{- end }}
