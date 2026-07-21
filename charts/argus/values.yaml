@@ -60,6 +60,29 @@ forwarder:
     name: argus-forwarder
     key: DISCORD_WEBHOOK
 
+  # --- Phase 4: HITL bot credentials (all optional, degrades gracefully) ---
+  # Discord bot token for receiving button interactions. When unset, the
+  # forwarder runs in webhook-only mode (phase 2/3/5 behavior) and HITL
+  # is REST-only via POST /proposals/{id}/{approve|reject}.
+  discordBotToken: {}
+    # name: argus-forwarder
+    # key: DISCORD_BOT_TOKEN
+  # Control channel for status posts (e.g. "argus HITL bot online")
+  discordControlChannelId: ""
+  # GitHub PAT for merge-on-approve. When unset, approves mark status
+  # 'approved-pending-merge' but don't merge — useful for staging the flow
+  # before granting the PAT.
+  githubToken: {}
+    # name: argus-github
+    # key: token
+
+  # --- Phase 4: persistent proposals store ---
+  proposalsStorage:
+    enabled: true
+    size: 100Mi
+    storageClassName: ""  # empty = cluster default
+  proposalsDbPath: /data/proposals.db
+
   # Forwarder has NO cluster RBAC — Holmes owns the investigation tools.
   serviceAccount:
     create: true

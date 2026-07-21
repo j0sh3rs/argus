@@ -1,0 +1,22 @@
+{{- if .Values.forwarder.proposalsStorage.enabled }}
+# Persistent store for the forwarder's proposals SQLite database.
+# Phase 4 (HITL): persists pending approvals across pod restarts so
+# button-click state isn't lost on rollouts.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-forwarder-proposals
+  labels:
+    app.kubernetes.io/name: argus
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: forwarder
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.forwarder.proposalsStorage.size | default "100Mi" | quote }}
+  {{- if .Values.forwarder.proposalsStorage.storageClassName }}
+  storageClassName: {{ .Values.forwarder.proposalsStorage.storageClassName | quote }}
+  {{- end }}
+{{- end }}

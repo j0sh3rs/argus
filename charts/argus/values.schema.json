@@ -50,6 +50,30 @@
             "key": { "type": "string" }
           }
         },
+        "discordBotToken": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "key": { "type": "string" }
+          }
+        },
+        "discordControlChannelId": { "type": "string" },
+        "githubToken": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "key": { "type": "string" }
+          }
+        },
+        "proposalsStorage": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "size": { "type": "string" },
+            "storageClassName": { "type": "string" }
+          }
+        },
+        "proposalsDbPath": { "type": "string" },
         "discordChannels": {
           "type": "object",
           "properties": {

@@ -36,7 +36,7 @@ spec:
           args:
             - |
               python -m venv /deps/venv
-              /deps/venv/bin/pip install --quiet --no-cache-dir aiohttp
+              /deps/venv/bin/pip install --quiet --no-cache-dir aiohttp discord.py
           volumeMounts:
             - name: deps
               mountPath: /deps
@@ -84,6 +84,28 @@ spec:
             # --- Phase 3: repo mapping as JSON ---
             - name: REPO_MAPPINGS
               value: {{ .Values.forwarder.repoMappings | toJson | quote }}
+            # --- Phase 4: HITL bot + GitHub merge-on-approve ---
+            # Both optional; forwarder degrades gracefully when absent.
+            {{- if .Values.forwarder.discordBotToken }}
+            - name: DISCORD_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.forwarder.discordBotToken.name | quote }}
+                  key: {{ .Values.forwarder.discordBotToken.key | quote }}
+            {{- end }}
+            {{- if .Values.forwarder.discordControlChannelId }}
+            - name: DISCORD_CONTROL_CHANNEL_ID
+              value: {{ .Values.forwarder.discordControlChannelId | quote }}
+            {{- end }}
+            {{- if .Values.forwarder.githubToken }}
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.forwarder.githubToken.name | quote }}
+                  key: {{ .Values.forwarder.githubToken.key | quote }}
+            {{- end }}
+            - name: PROPOSALS_DB
+              value: {{ .Values.forwarder.proposalsDbPath | default "/data/proposals.db" | quote }}
           ports:
             - name: http
               containerPort: 8080
@@ -93,6 +115,10 @@ spec:
             - name: code
               mountPath: /app
               readOnly: true
+            {{- if .Values.forwarder.proposalsStorage.enabled }}
+            - name: proposals
+              mountPath: /data
+            {{- end }}
           resources:
             {{- toYaml .Values.forwarder.resources | nindent 12 }}
           readinessProbe:
@@ -113,6 +139,11 @@ spec:
         - name: code
           configMap:
             name: {{ .Release.Name }}-forwarder-code
+        {{- if .Values.forwarder.proposalsStorage.enabled }}
+        - name: proposals
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-forwarder-proposals
+        {{- end }}
       {{- with .Values.forwarder.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
