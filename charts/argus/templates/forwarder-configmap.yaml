@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-forwarder-code
+  labels:
+    app.kubernetes.io/name: argus
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: forwarder
+data:
+  forwarder.py: |
+{{ .Files.Get "files/forwarder.py" | indent 4 }}

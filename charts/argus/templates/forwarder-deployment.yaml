@@ -1,0 +1,109 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-forwarder
+  labels:
+    app.kubernetes.io/name: argus
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: forwarder
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: argus
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: forwarder
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: argus
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: forwarder
+      annotations:
+        # Roll on forwarder.py change — ConfigMap updates don't restart pods on their own.
+        checksum/forwarder: {{ sha256sum (.Files.Get "files/forwarder.py") }}
+    spec:
+      serviceAccountName: {{ include "argus.forwarderServiceAccountName" . }}
+      {{- with .Values.forwarder.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        - name: deps
+          image: "{{ .Values.forwarder.image.repository }}:{{ .Values.forwarder.image.tag }}"
+          imagePullPolicy: {{ .Values.forwarder.image.pullPolicy }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              python -m venv /deps/venv
+              /deps/venv/bin/pip install --quiet --no-cache-dir aiohttp
+          volumeMounts:
+            - name: deps
+              mountPath: /deps
+          resources:
+            {{- toYaml .Values.forwarder.resources | nindent 12 }}
+      containers:
+        - name: forwarder
+          image: "{{ .Values.forwarder.image.repository }}:{{ .Values.forwarder.image.tag }}"
+          imagePullPolicy: {{ .Values.forwarder.image.pullPolicy }}
+          command: ["/deps/venv/bin/python"]
+          args: ["/app/forwarder.py"]
+          env:
+            - name: HOLMES_URL
+              value: {{ .Values.forwarder.holmesUrl | quote }}
+            - name: HOLMES_MODEL
+              value: {{ .Values.forwarder.holmesModel | quote }}
+            - name: HOLMES_TIMEOUT_SEC
+              value: {{ .Values.forwarder.holmesTimeoutSec | quote }}
+            - name: INVESTIGATE_SEVERITIES
+              value: {{ .Values.forwarder.investigateSeverities | quote }}
+            - name: DEDUPE_TTL_SEC
+              value: {{ .Values.forwarder.dedupeTtlSec | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.forwarder.logLevel | quote }}
+            - name: DISCORD_WEBHOOK
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.forwarder.discordSecret.name | quote }}
+                  key: {{ .Values.forwarder.discordSecret.key | quote }}
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: deps
+              mountPath: /deps
+            - name: code
+              mountPath: /app
+              readOnly: true
+          resources:
+            {{- toYaml .Values.forwarder.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+      volumes:
+        - name: deps
+          emptyDir: {}
+        - name: code
+          configMap:
+            name: {{ .Release.Name }}-forwarder-code
+      {{- with .Values.forwarder.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.forwarder.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.forwarder.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

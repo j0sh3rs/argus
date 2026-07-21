@@ -1,0 +1,4 @@
+# Downloaded chart dependencies (tgz + unpacked). Chart.lock IS committed
+# so dependency versions are pinned and reproducible.
+charts/*/charts/
+*.tgz

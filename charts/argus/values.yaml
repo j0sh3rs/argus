@@ -1,0 +1,99 @@
+# Default values for argus.
+# See values.schema.json for the contract.
+
+# --- Forwarder (this chart's own component) ---
+forwarder:
+  image:
+    repository: python
+    tag: "3.13-slim"
+    pullPolicy: IfNotPresent
+
+  # Holmes /api/chat endpoint. With release=argus the holmes subchart
+  # exposes its Service as `argus-holmes` on port 80.
+  holmesUrl: http://argus-holmes:80
+  holmesModel: auto
+  holmesTimeoutSec: 300
+
+  # Which alert severities to investigate. Others are ignored.
+  investigateSeverities: "critical,warning"
+
+  dedupeTtlSec: 3600
+  logLevel: INFO
+
+  # Forwarder has NO cluster RBAC — Holmes owns the investigation tools.
+  serviceAccount:
+    create: true
+    name: ""
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  # Discord webhook is secret-sourced. The referenced Secret must contain
+  # a `DISCORD_WEBHOOK` key. nixlab provisions it via GCP Secret Manager + ESO.
+  discordSecret:
+    name: argus-forwarder
+    key: DISCORD_WEBHOOK
+
+# --- Holmes subchart override ---
+# HolmesGPT itself. We point it at the in-cluster omniroute gateway
+# (OpenAI-compatible) and enable the kubernetes toolsets so it can
+# actually investigate alerts.
+holmes:
+  serviceAccount:
+    create: true
+
+  # Read-only cluster access for Holmes's kubectl toolsets.
+  k8sRBAC: true
+
+  toolsets:
+    kubernetes/core:
+      enabled: true
+    kubernetes/logs:
+      enabled: true
+    prometheus/metrics:
+      enabled: true
+    internet:
+      enabled: true
+    connectivity_check:
+      enabled: true
+    bash:
+      enabled: true
+      config:
+        builtin_allowlist: "extended"
+
+  # Point Holmes at omniroute (OpenAI-compatible gateway).
+  # `auto` is omniroute's virtual model ID — LKGP-scored across providers.
+  additionalEnvVars:
+    - name: OPENAI_API_BASE
+      value: http://omniroute.apps.svc.cluster.local:20128/v1
+    - name: OPENAI_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: cliproxyapi-secrets
+          key: API_KEY_PRIMARY
+
+  modelList:
+    auto:
+      api_key: "{{ env.OPENAI_API_KEY }}"
+      api_base: "{{ env.OPENAI_API_BASE }}"
+      model: openai/auto
+      temperature: 1
+
+  config:
+    model: auto
+
+  resources:
+    requests:
+      cpu: 200m
+      memory: 1024Mi
+    limits:
+      memory: 2Gi
