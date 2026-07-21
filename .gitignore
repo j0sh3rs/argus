@@ -2,3 +2,7 @@
 # so dependency versions are pinned and reproducible.
 charts/*/charts/
 *.tgz
+
+# Python bytecode
+__pycache__/
+*.pyc
