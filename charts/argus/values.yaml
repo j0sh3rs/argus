@@ -48,11 +48,21 @@ forwarder:
 # (OpenAI-compatible) and enable the kubernetes toolsets so it can
 # actually investigate alerts.
 holmes:
-  serviceAccount:
-    create: true
+  # Disable the subchart's own ServiceAccount — its template hardcodes
+  # automountServiceAccountToken: false and ships no ClusterRoleBinding,
+  # which force-disables every kubernetes toolset at startup. Argus owns
+  # a properly-permissioned SA (see templates/holmes-rbac.yaml) and hands
+  # it to holmes via customServiceAccountName.
+  createServiceAccount: false
+  k8sRBAC: false
+  # Use the Argus-managed SA from templates/holmes-rbac.yaml.
+  customServiceAccountName: argus-holmes-sa
 
-  # Read-only cluster access for Holmes's kubectl toolsets.
-  k8sRBAC: true
+  rbac:
+    # Argus-managed SA + ClusterRoleBinding (view ClusterRole, automount
+    # enabled). Skipped if create=false.
+    create: true
+    serviceAccountName: ""
 
   toolsets:
     kubernetes/core:

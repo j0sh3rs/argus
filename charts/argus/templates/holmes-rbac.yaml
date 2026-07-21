@@ -1,0 +1,39 @@
+{{- if .Values.holmes.rbac.create }}
+# Argus-owned SA + RBAC for HolmesGPT.
+#
+# Why this exists: the upstream holmes subchart hardcodes
+# automountServiceAccountToken: false on its ServiceAccount and ships no
+# ClusterRoleBinding. Without a mounted token and read cluster perms,
+# Holmes force-disables its kubernetes/core, kubernetes/logs, and bash
+# toolsets at startup — every investigation returns "Investigation
+# blocked — all Kubernetes toolsets are disabled." This SA has automount
+# enabled and is bound to the built-in `view` ClusterRole (read-only
+# across the cluster, excludes secrets by default).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "argus.holmesServiceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: argus
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: holmes
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Name }}-holmes-view
+  labels:
+    app.kubernetes.io/name: argus
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: holmes
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "argus.holmesServiceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: view
+{{- end }}
