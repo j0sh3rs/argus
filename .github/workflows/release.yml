@@ -1,0 +1,68 @@
+name: Release chart
+
+# Publishes charts/argus two ways whenever Chart.yaml's version changes on
+# main: a classic index.yaml on gh-pages (chart-releaser) and an OCI
+# artifact on ghcr.io (for anyone who wants oci://ghcr.io/j0sh3rs/argus).
+# Tags are plain "v{version}" (see cr.yaml) so home-ops's Renovate `flux`
+# manager can bump GitRepository.spec.ref.tag the same way it already
+# does for openviking.
+on:
+  push:
+    branches: [main]
+    paths:
+      - charts/argus/**
+      - cr.yaml
+      - .github/workflows/release.yml
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "$GITHUB_ACTOR"
+          git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Add chart dependency repos
+        run: |
+          helm repo add robusta https://robusta-charts.storage.googleapis.com
+          helm repo update
+
+      - name: Build chart dependencies
+        run: helm dependency build charts/argus
+
+      # Creates a GitHub Release per bumped Chart.yaml version and
+      # publishes/updates the gh-pages index.yaml.
+      - name: Run chart-releaser
+        uses: helm/chart-releaser-action@v1
+        with:
+          config: cr.yaml
+        env:
+          CR_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: Push to GHCR (OCI)
+        run: |
+          shopt -s nullglob
+          packages=(.cr-release-packages/*.tgz)
+          if [ ${#packages[@]} -eq 0 ]; then
+            echo "No new chart package this run; skipping OCI push."
+            exit 0
+          fi
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io \
+            --username "${{ github.actor }}" --password-stdin
+          for pkg in "${packages[@]}"; do
+            helm push "$pkg" "oci://ghcr.io/${{ github.repository_owner }}/argus/charts"
+          done

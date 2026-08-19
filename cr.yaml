@@ -1,0 +1,7 @@
+# Config for helm/chart-releaser-action (.github/workflows/release.yml).
+# Plain "v{version}" tags (not the tool's default "argus-{version}") so
+# home-ops's Renovate `flux` manager can bump the GitRepository's
+# spec.ref.tag the same way it already does for openviking.
+release-name-template: "v{{ .Version }}"
+skip-existing: true
+git-repo: argus
