@@ -81,11 +81,18 @@ spec:
                   key: {{ .Values.forwarder.discordSecret.key | quote }}
               {{- end }}
             {{- end }}
-            {{- $chanMap := dict "critical" .Values.forwarder.discordChannels.critical "warning" .Values.forwarder.discordChannels.warning "info" .Values.forwarder.discordChannels.info "deals" .Values.forwarder.discordChannels.deals }}
-            {{- range $k, $v := $chanMap }}
-            {{- if $v }}
+            {{- range $k := list "critical" "warning" "info" "deals" }}
+            {{- $secretRef := index $.Values.forwarder.discordChannelSecrets $k }}
+            {{- $plain := index $.Values.forwarder.discordChannels $k }}
+            {{- if $secretRef }}
             - name: DISCORD_WEBHOOK_{{ $k | upper }}
-              value: {{ $v | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretRef.name | quote }}
+                  key: {{ $secretRef.key | quote }}
+            {{- else if $plain }}
+            - name: DISCORD_WEBHOOK_{{ $k | upper }}
+              value: {{ $plain | quote }}
             {{- end }}
             {{- end }}
             # --- Phase 3: repo mapping as JSON ---

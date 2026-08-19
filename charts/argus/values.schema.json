@@ -103,6 +103,23 @@
         "discordControlChannelId": {
           "type": "string"
         },
+        "discordEnabled": {
+          "type": "boolean"
+        },
+        "changelogWebhookSecret": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            }
+          }
+        },
+        "slackSecret": {
+          "type": "string"
+        },
         "githubToken": {
           "type": "object",
           "properties": {
@@ -151,6 +168,24 @@
             }
           }
         },
+        "discordChannelSecrets": {
+          "type": "object",
+          "description": "Per-severity secretKeyRef override for discordChannels.{critical,warning,info,deals}. Takes precedence over the plaintext value in discordChannels for that channel.",
+          "properties": {
+            "critical": {
+              "$ref": "#/definitions/secretKeyRef"
+            },
+            "warning": {
+              "$ref": "#/definitions/secretKeyRef"
+            },
+            "info": {
+              "$ref": "#/definitions/secretKeyRef"
+            },
+            "deals": {
+              "$ref": "#/definitions/secretKeyRef"
+            }
+          }
+        },
         "repoMappings": {
           "type": "object",
           "additionalProperties": {
@@ -166,9 +201,30 @@
     },
     "holmes": {
       "type": "object"
+    },
+    "argusSkills": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      }
     }
   },
   "required": [
     "forwarder"
-  ]
+  ],
+  "definitions": {
+    "secretKeyRef": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        }
+      }
+    }
+  }
 }

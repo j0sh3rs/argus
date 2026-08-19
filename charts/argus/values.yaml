@@ -24,16 +24,32 @@ forwarder:
   # Maps severity → Discord channel webhook URL. The alert-responder
   # GCP secret (monitoring-alert-responder, reused via remoteKey) carries
   # multiple webhook URLs keyed by channel; nixlab's external-secrets
-  # template projects them as env. For standalone installs, set each
-  # webhook URL directly here via templated secretKeyRef.
+  # template projects them as env.
   #
-  # unset = no post to that channel; default is the fallback.
+  # unset = no post to that channel; default is the fallback. Each webhook
+  # URL is itself a bearer credential (anyone holding it can post to that
+  # channel) — prefer discordChannelSecrets below over setting these
+  # directly, which lands the URL in plaintext values/manifests.
   discordChannels:
     default: ""   # DISCORD_WEBHOOK_DEFAULT — required fallback
     critical: ""  # DISCORD_WEBHOOK_CRITICAL
     warning: ""   # DISCORD_WEBHOOK_WARNING
     info: ""      # DISCORD_WEBHOOK_INFO (empty = skip info channel)
     deals: ""     # DISCORD_WEBHOOK_DEALS
+
+  # Secret-sourced override for discordChannels.{critical,warning,info,deals}.
+  # When set for a channel, takes precedence over the plaintext value in
+  # discordChannels for that same channel — same {name,key} secretKeyRef
+  # shape as discordSecret. discordChannels.default already has this via
+  # discordSecret (its required fallback); this extends the same pattern
+  # to the per-severity overrides.
+  discordChannelSecrets:
+    critical: {}
+      # name: argus-forwarder
+      # key: DISCORD_WEBHOOK_CRITICAL
+    warning: {}
+    info: {}
+    deals: {}
 
   # --- Phase 3: project-agnostic repo mapping ---
   # Maps k8s namespace → GitHub repo (owner/repo). Holmes uses this to
