@@ -1,0 +1,30 @@
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  extends: [
+    'config:recommended',
+    'helpers:pinGitHubActionDigests',
+    ':dependencyDashboard',
+    ':semanticCommits',
+  ],
+  dependencyDashboardTitle: 'Renovate Dashboard 🤖',
+  // Chart.yaml's `dependencies:` block (the holmes subchart pin) is the
+  // only thing Renovate needs to watch here — everything else in the
+  // repo is either the forwarder's stdlib-only Python or plain YAML.
+  helmv3: {
+    managerFilePatterns: [
+      '/(^|/)charts/argus/Chart\\.yaml$/',
+    ],
+  },
+  // Chart.lock is generated, not hand-edited — regenerate it in the PR
+  // branch on every dependency bump so it never drifts from Chart.yaml.
+  postUpgradeTasks: {
+    commands: [
+      'helm repo add robusta https://robusta-charts.storage.googleapis.com',
+      'helm dependency update charts/argus',
+    ],
+    fileFilters: [
+      'charts/argus/Chart.lock',
+    ],
+    executionMode: 'branch',
+  },
+}
