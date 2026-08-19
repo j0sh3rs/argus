@@ -5,7 +5,7 @@ description: >
   webhooks, investigates firing alerts via HolmesGPT (pointed at an
   OpenAI-compatible LLM gateway), and posts triage summaries to Discord.
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: "0.1.0"
 keywords:
   - sre
