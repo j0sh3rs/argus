@@ -25,6 +25,23 @@
             "pullPolicy"
           ]
         },
+        "pythonDeps": {
+          "type": "object",
+          "properties": {
+            "aiohttp": {
+              "type": "string"
+            },
+            "discordpy": {
+              "type": "string"
+            }
+          }
+        },
+        "podSecurityContext": {
+          "type": "object"
+        },
+        "containerSecurityContext": {
+          "type": "object"
+        },
         "holmesUrl": {
           "type": "string"
         },

@@ -8,6 +8,39 @@ forwarder:
     tag: "3.13-slim"
     pullPolicy: IfNotPresent
 
+  # Pinned versions for the initContainer's `pip install` — the base image
+  # has no dependencies baked in, so these are installed fresh into an
+  # emptyDir on every pod (re)start. Unpinned installs would mean a new
+  # upstream release (or a PyPI outage) silently changes/breaks the
+  # forwarder on the next restart with no version control at all, unlike
+  # every other dependency in this repo (Chart.lock, GH Actions digests).
+  # Bump deliberately, same as any other dependency bump.
+  pythonDeps:
+    aiohttp: "3.14.3"
+    discordpy: "2.7.1"
+
+  # Pod-level hardening. Forwarder has no cluster RBAC and doesn't need
+  # root — runAsUser/runAsGroup/fsGroup are arbitrary non-root IDs so the
+  # emptyDir/PVC volumes are group-writable regardless of image UID.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+
+  # Applied to both the "deps" initContainer and the "forwarder" container.
+  # readOnlyRootFilesystem is safe here because every path the process
+  # writes to (venv install, /tmp, /data) is an explicit volume mount, not
+  # the container's root filesystem.
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+
   # Holmes /api/chat endpoint. With release=argus the holmes subchart
   # exposes its Service as `argus-holmes` on port 80.
   holmesUrl: http://argus-holmes:80

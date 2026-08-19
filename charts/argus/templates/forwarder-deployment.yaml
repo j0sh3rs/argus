@@ -29,6 +29,12 @@ spec:
         checksum/forwarder: {{ sha256sum (.Files.Get "files/forwarder.py") }}
     spec:
       serviceAccountName: {{ include "argus.forwarderServiceAccountName" . }}
+      # Forwarder has NO cluster RBAC (see holmes-rbac.yaml's comment for
+      # contrast) — it never calls the k8s API, so it has no use for an
+      # API server token even though its SA has zero bindings today.
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.forwarder.podSecurityContext | nindent 8 }}
       {{- with .Values.forwarder.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -41,10 +47,19 @@ spec:
           args:
             - |
               python -m venv /deps/venv
-              /deps/venv/bin/pip install --quiet --no-cache-dir aiohttp discord.py
+              /deps/venv/bin/pip install --quiet --no-cache-dir \
+                "aiohttp=={{ .Values.forwarder.pythonDeps.aiohttp }}" \
+                "discord.py=={{ .Values.forwarder.pythonDeps.discordpy }}"
+          env:
+            - name: HOME
+              value: /deps
+          securityContext:
+            {{- toYaml .Values.forwarder.containerSecurityContext | nindent 12 }}
           volumeMounts:
             - name: deps
               mountPath: /deps
+            - name: tmp
+              mountPath: /tmp
           resources:
             {{- toYaml .Values.forwarder.resources | nindent 12 }}
       containers:
@@ -53,7 +68,15 @@ spec:
           imagePullPolicy: {{ .Values.forwarder.image.pullPolicy }}
           command: ["/deps/venv/bin/python"]
           args: ["/app/forwarder.py"]
+          securityContext:
+            {{- toYaml .Values.forwarder.containerSecurityContext | nindent 12 }}
           env:
+            # UID 1000 has no /etc/passwd entry, so anything doing
+            # os.path.expanduser("~") (pip, and some stdlib/aiohttp paths
+            # that check ~/.netrc) needs HOME set explicitly or it errors
+            # trying to look the user up.
+            - name: HOME
+              value: /deps
             - name: HOLMES_URL
               value: {{ .Values.forwarder.holmesUrl | quote }}
             - name: HOLMES_MODEL
@@ -152,6 +175,8 @@ spec:
             - name: code
               mountPath: /app
               readOnly: true
+            - name: tmp
+              mountPath: /tmp
             {{- if .Values.forwarder.proposalsStorage.enabled }}
             - name: proposals
               mountPath: /data
@@ -172,6 +197,8 @@ spec:
             periodSeconds: 30
       volumes:
         - name: deps
+          emptyDir: {}
+        - name: tmp
           emptyDir: {}
         - name: code
           configMap:
