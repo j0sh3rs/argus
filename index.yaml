@@ -1,3 +1,32 @@
 apiVersion: v1
-entries: {}
-generated: "2026-08-19T00:00:00Z"
+entries:
+  argus:
+  - apiVersion: v2
+    appVersion: 0.1.0
+    created: "2026-08-19T14:00:44.817994722Z"
+    dependencies:
+    - name: holmes
+      repository: https://robusta-charts.storage.googleapis.com
+      version: '>=0.26.0'
+    description: 'HolmesGPT-based SRE triage agent for Kubernetes. Receives Alertmanager
+      webhooks, investigates firing alerts via HolmesGPT (pointed at an OpenAI-compatible
+      LLM gateway), and posts triage summaries to Discord. '
+    digest: 9b97379634f363f2a3a1c62ccfebd2de7471d6378bc697468a9b443a9b473fb0
+    home: https://github.com/olivecasazza/argus
+    keywords:
+    - sre
+    - triage
+    - alerting
+    - holmesgpt
+    - kubernetes
+    - discord
+    maintainers:
+    - name: olive
+    name: argus
+    sources:
+    - https://github.com/olivecasazza/argus
+    type: application
+    urls:
+    - https://github.com/j0sh3rs/argus/releases/download/v0.1.1/argus-0.1.1.tgz
+    version: 0.1.1
+generated: "2026-08-19T14:00:44.818003595Z"
