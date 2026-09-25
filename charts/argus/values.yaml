@@ -97,6 +97,10 @@ forwarder:
     # Cap on recalled text injected into the prompt (context budget).
     recallMaxChars: 1500
     timeoutSec: 20
+    # Named retain strategy defined in the bank's config; "" = bank default.
+    # Use e.g. "document" when sharing a coding-agent bank whose default
+    # strategy is "git".
+    strategy: ""
     apiKeySecret: {}
       # name: argus-forwarder
       # key: HINDSIGHT_API_KEY

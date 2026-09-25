@@ -145,6 +145,10 @@ HINDSIGHT_API_KEY = os.environ.get("HINDSIGHT_API_KEY", "")
 HINDSIGHT_BANK = os.environ.get("HINDSIGHT_BANK", "incidents")
 HINDSIGHT_RECALL_MAX_CHARS = int(os.environ.get("HINDSIGHT_RECALL_MAX_CHARS", "1500"))
 HINDSIGHT_TIMEOUT = int(os.environ.get("HINDSIGHT_TIMEOUT_SEC", "20"))
+# Named retain strategy from the bank's config (e.g. "document" when sharing
+# a coding-agent bank whose default strategy expects git commits). "" = bank
+# default.
+HINDSIGHT_STRATEGY = os.environ.get("HINDSIGHT_STRATEGY", "")
 
 _PR_URL_RE = re.compile(
     r"https?://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)", re.IGNORECASE
@@ -343,7 +347,12 @@ def _alert_subject(labels: dict[str, Any]) -> str:
 
 
 def _alert_tags(labels: dict[str, Any], kind: str) -> list[str]:
-    tags = ["argus", f"kind:{kind}", f"alertname:{labels.get('alertname', 'unknown')}"]
+    tags = [
+        "argus",
+        "source:argus",
+        f"kind:{kind}",
+        f"alertname:{labels.get('alertname', 'unknown')}",
+    ]
     if ns := labels.get("namespace"):
         tags.append(f"namespace:{ns}")
     return tags
@@ -423,6 +432,8 @@ async def _retain(
         },
         "timestamp": timestamp or _now(),
     }
+    if HINDSIGHT_STRATEGY:
+        item["strategy"] = HINDSIGHT_STRATEGY
     try:
         resp = await session.post(
             _hindsight_memories_url(),

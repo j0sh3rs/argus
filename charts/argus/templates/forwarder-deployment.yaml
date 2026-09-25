@@ -175,6 +175,10 @@ spec:
               value: {{ .recallMaxChars | default 1500 | quote }}
             - name: HINDSIGHT_TIMEOUT_SEC
               value: {{ .timeoutSec | default 20 | quote }}
+            {{- if .strategy }}
+            - name: HINDSIGHT_STRATEGY
+              value: {{ .strategy | quote }}
+            {{- end }}
             {{- if .apiKeySecret }}
             - name: HINDSIGHT_API_KEY
               valueFrom:

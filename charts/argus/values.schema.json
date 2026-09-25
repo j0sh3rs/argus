@@ -236,6 +236,9 @@
                   "type": "string"
                 }
               }
+            },
+            "strategy": {
+              "type": "string"
             }
           }
         }
