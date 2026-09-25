@@ -4,6 +4,9 @@ Phase 2: Routes triage to Discord channels by severity.
 Phase 3: Resolves alert namespace to GitHub repo; Holmes opens fix PRs.
 Phase 5: Alert-tuning assessment in every triage.
 Phase 4: Human-in-the-loop approve/reject via Discord buttons.
+Phase 6: Incident memory via Hindsight (optional, HINDSIGHT_URL). Prior
+  incidents are recalled into the triage prompt; triage summaries,
+  resolutions, and proposal outcomes are retained into one bank.
 
 Phase 4 architecture:
   - discord.py Client (gateway) receives button interactions natively.
@@ -33,9 +36,10 @@ import signal
 import sqlite3
 import time
 from contextlib import closing
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from aiohttp import ClientSession, ClientTimeout, web
 
@@ -132,6 +136,15 @@ DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")
 DISCORD_CONTROL_CHANNEL_ID = os.environ.get("DISCORD_CONTROL_CHANNEL_ID", "")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 PROPOSALS_DB = os.environ.get("PROPOSALS_DB", "/data/proposals.db")
+
+# --- Phase 6: incident memory (Hindsight) --------------------------------- #
+# Unset HINDSIGHT_URL = feature off. Recall is done here (not as a Holmes
+# toolset) so it costs no tool-schema tokens and can't be skipped by the model.
+HINDSIGHT_URL = os.environ.get("HINDSIGHT_URL", "").rstrip("/")
+HINDSIGHT_API_KEY = os.environ.get("HINDSIGHT_API_KEY", "")
+HINDSIGHT_BANK = os.environ.get("HINDSIGHT_BANK", "incidents")
+HINDSIGHT_RECALL_MAX_CHARS = int(os.environ.get("HINDSIGHT_RECALL_MAX_CHARS", "1500"))
+HINDSIGHT_TIMEOUT = int(os.environ.get("HINDSIGHT_TIMEOUT_SEC", "20"))
 
 _PR_URL_RE = re.compile(
     r"https?://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)", re.IGNORECASE
@@ -298,11 +311,244 @@ def _extract_pr(triage: str) -> Optional[tuple[str, str, int]]:
 
 
 # --------------------------------------------------------------------------- #
+#  Phase 6: incident memory (Hindsight recall + retain)
+# --------------------------------------------------------------------------- #
+
+# fingerprint -> latest triage text, so a resolution can carry its verdict.
+_last_triage: dict[str, str] = {}
+_LAST_TRIAGE_MAX = 500
+
+# Label keys that identify *what* broke, in priority order, for recall queries.
+_SUBJECT_LABELS = (
+    "deployment", "statefulset", "daemonset", "job_name", "pod",
+    "container", "persistentvolumeclaim", "node", "instance", "service",
+)
+
+
+def _hindsight_headers() -> dict[str, str]:
+    h = {"Content-Type": "application/json"}
+    if HINDSIGHT_API_KEY:
+        h["Authorization"] = f"Bearer {HINDSIGHT_API_KEY}"
+    return h
+
+
+def _hindsight_memories_url(suffix: str = "") -> str:
+    bank = quote(HINDSIGHT_BANK, safe="")
+    return f"{HINDSIGHT_URL}/v1/default/banks/{bank}/memories{suffix}"
+
+
+def _alert_subject(labels: dict[str, Any]) -> str:
+    parts = [f"{k}={labels[k]}" for k in _SUBJECT_LABELS if labels.get(k)]
+    return ", ".join(parts[:3])
+
+
+def _alert_tags(labels: dict[str, Any], kind: str) -> list[str]:
+    tags = ["argus", f"kind:{kind}", f"alertname:{labels.get('alertname', 'unknown')}"]
+    if ns := labels.get("namespace"):
+        tags.append(f"namespace:{ns}")
+    return tags
+
+
+async def _recall_incidents(session: ClientSession, alert: dict[str, Any]) -> str:
+    """Prior incidents relevant to this alert, as a bullet list ('' if none)."""
+    if not HINDSIGHT_URL:
+        return ""
+    labels = alert.get("labels", {})
+    alertname = labels.get("alertname", "unknown")
+    namespace = labels.get("namespace", "")
+    subject = _alert_subject(labels)
+    query = (
+        f"Previous firings of the {alertname} alert"
+        + (f" in namespace {namespace}" if namespace else "")
+        + (f" ({subject})" if subject else "")
+        + ": what was the root cause, and what fixed or resolved it?"
+    )
+    try:
+        resp = await session.post(
+            _hindsight_memories_url("/recall"),
+            json={"query": query, "budget": "low", "max_tokens": 1024},
+            headers=_hindsight_headers(),
+            timeout=ClientTimeout(total=HINDSIGHT_TIMEOUT),
+        )
+        if resp.status == 404:  # bank not created yet (no incidents retained)
+            return ""
+        if resp.status >= 400:
+            log.warning("hindsight recall HTTP %d: %s", resp.status, (await resp.text())[:200])
+            return ""
+        results = (await resp.json()).get("results") or []
+    except Exception as exc:  # noqa: BLE001
+        log.warning("hindsight recall failed: %s", exc)
+        return ""
+
+    lines: list[str] = []
+    used = 0
+    for r in results:
+        text = " ".join((r.get("text") or "").split())
+        if not text:
+            continue
+        when = (r.get("occurred_start") or r.get("mentioned_at") or "")[:10]
+        line = f"- [{when}] {text}" if when else f"- {text}"
+        if used + len(line) > HINDSIGHT_RECALL_MAX_CHARS:
+            continue
+        lines.append(line)
+        used += len(line) + 1
+    log.info("hindsight recall %s: %d/%d memories", alertname, len(lines), len(results))
+    return "\n".join(lines)
+
+
+async def _retain(
+    session: ClientSession,
+    content: str,
+    *,
+    labels: dict[str, Any],
+    kind: str,
+    document_id: str,
+    timestamp: Optional[str] = None,
+    metadata: Optional[dict[str, str]] = None,
+) -> None:
+    """Store one incident record. Async on the Hindsight side; never raises."""
+    if not HINDSIGHT_URL:
+        return
+    item: dict[str, Any] = {
+        "content": content,
+        "context": f"argus alert triage record ({kind})",
+        "document_id": document_id,
+        "tags": _alert_tags(labels, kind),
+        "metadata": {
+            "alertname": str(labels.get("alertname", "unknown")),
+            "severity": str(labels.get("severity", "unknown")),
+            "namespace": str(labels.get("namespace", "")),
+            "kind": kind,
+            **(metadata or {}),
+        },
+        "timestamp": timestamp or _now(),
+    }
+    try:
+        resp = await session.post(
+            _hindsight_memories_url(),
+            json={"items": [item], "async": True},
+            headers=_hindsight_headers(),
+            timeout=ClientTimeout(total=HINDSIGHT_TIMEOUT),
+        )
+        if resp.status >= 400:
+            log.warning("hindsight retain %s HTTP %d: %s", kind, resp.status, (await resp.text())[:200])
+        else:
+            log.info("hindsight retain %s %s", kind, document_id)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("hindsight retain %s failed: %s", kind, exc)
+
+
+def _alert_header(alert: dict[str, Any]) -> str:
+    labels = alert.get("labels", {})
+    subject = _alert_subject(labels)
+    return (
+        f"Alert {labels.get('alertname', 'unknown')} "
+        f"(severity {labels.get('severity', 'unknown')}, "
+        f"namespace {labels.get('namespace') or 'n/a'}"
+        + (f", {subject}" if subject else "")
+        + ")"
+    )
+
+
+async def _retain_triage(
+    session: ClientSession, alert: dict[str, Any], fp: str, analysis: str
+) -> None:
+    if analysis.startswith("_Holmes"):  # timeout/HTTP error, not a triage
+        return
+    _last_triage[fp] = analysis
+    while len(_last_triage) > _LAST_TRIAGE_MAX:
+        _last_triage.pop(next(iter(_last_triage)))
+    started = alert.get("startsAt", "")
+    summary = alert.get("annotations", {}).get("summary") or alert.get(
+        "annotations", {}
+    ).get("description", "")
+    content = (
+        f"{_alert_header(alert)} started firing at {started or 'unknown time'}."
+        + (f" Alert summary: {summary}" if summary else "")
+        + f"\nAutomated triage by argus/HolmesGPT:\n{analysis}"
+    )
+    await _retain(
+        session,
+        content,
+        labels=alert.get("labels", {}),
+        kind="triage",
+        document_id=f"argus:triage:{fp}:{started}",
+        timestamp=started or None,
+        metadata={"fingerprint": fp},
+    )
+
+
+def _duration(start: str, end: str) -> str:
+    try:
+        s = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        e = datetime.fromisoformat(end.replace("Z", "+00:00"))
+        mins = int((e - s).total_seconds() // 60)
+    except (ValueError, TypeError):
+        return ""
+    return f"{mins // 60}h{mins % 60:02d}m" if mins >= 60 else f"{mins}m"
+
+
+async def _retain_resolution(session: ClientSession, alert: dict[str, Any]) -> None:
+    fp = _fingerprint(alert)
+    started = alert.get("startsAt", "")
+    ended = alert.get("endsAt", "")
+    dur = _duration(started, ended)
+    triage = _last_triage.pop(fp, "")
+    content = (
+        f"{_alert_header(alert)} resolved at {ended or 'unknown time'}"
+        + (f" after firing for {dur}" if dur else "")
+        + f" (started {started or 'unknown'})."
+        + (
+            f"\nThe argus triage for this firing had said:\n{triage[:600]}"
+            if triage
+            else ""
+        )
+    )
+    await _retain(
+        session,
+        content,
+        labels=alert.get("labels", {}),
+        kind="resolved",
+        document_id=f"argus:resolved:{fp}:{started}",
+        timestamp=ended or None,
+        metadata={"fingerprint": fp, "duration": dur},
+    )
+
+
+async def _retain_proposal_outcome(
+    session: ClientSession, row: sqlite3.Row, status: str, actor: str, note: str
+) -> None:
+    labels = {
+        "alertname": row["alertname"],
+        "severity": row["severity"],
+        "namespace": row["namespace"],
+    }
+    verb = {
+        "merged": "approved and merged",
+        "approved-pending-merge": "approved (merge pending)",
+        "needs-revision": "sent back for revision",
+    }.get(status, status)
+    content = (
+        f"The proposed fix {row['pr_url']} for alert {row['alertname']} "
+        f"(namespace {row['namespace'] or 'n/a'}) was {verb} by a human "
+        f"reviewer ({actor})." + (f" Note: {note}" if note else "")
+    )
+    await _retain(
+        session,
+        content,
+        labels=labels,
+        kind=f"proposal-{status}",
+        document_id=f"argus:proposal:{row['id']}:{status}",
+        metadata={"fingerprint": row["fingerprint"], "pr_url": row["pr_url"]},
+    )
+
+
+# --------------------------------------------------------------------------- #
 #  Holmes interaction (prompt from phase 2/3/5)
 # --------------------------------------------------------------------------- #
 
 
-def _build_prompt(alert: dict[str, Any]) -> str:
+def _build_prompt(alert: dict[str, Any], history: str = "") -> str:
     labels = alert.get("labels", {})
     annotations = alert.get("annotations", {})
     namespace = labels.get("namespace", "")
@@ -325,6 +571,16 @@ def _build_prompt(alert: dict[str, Any]) -> str:
         "- **Action**: specific -- a command to run or the next diagnostic step.\n"
         "- **Confidence**: low / medium / high.\n"
     )
+
+    if history:
+        prompt += (
+            "\n**Prior incidents** (from argus's incident memory; may be "
+            "unrelated -- verify against live evidence before relying on "
+            "them):\n"
+            f"{history}\n"
+            "If one of these matches, add a **History** line naming it and "
+            "what fixed it last time.\n"
+        )
 
     if repo:
         prompt += (
@@ -360,11 +616,13 @@ def _extract_analysis(data: Any) -> str:
     return json.dumps(data, indent=2)
 
 
-async def _investigate(session: ClientSession, alert: dict[str, Any]) -> str:
+async def _investigate(
+    session: ClientSession, alert: dict[str, Any], history: str = ""
+) -> str:
     try:
         resp = await session.post(
             f"{HOLMES_URL}/api/chat",
-            json={"ask": _build_prompt(alert), "model": HOLMES_MODEL},
+            json={"ask": _build_prompt(alert, history), "model": HOLMES_MODEL},
             timeout=ClientTimeout(total=HOLMES_TIMEOUT),
         )
         if resp.status >= 400:
@@ -560,6 +818,7 @@ async def _handle_button(interaction: "Any", http_session: ClientSession) -> Non
         merged, msg = await _merge_pr(http_session, row["repo"], row["pr_number"])
         status = "merged" if merged else "approved-pending-merge"
         _set_proposal_status(proposal_id, status, actor, msg)
+        await _retain_proposal_outcome(http_session, row, status, actor, msg)
         await interaction.response.send_message(
             f":white_check_mark: **Approved** by {actor} — {msg}\n"
             f"`{row['alertname']}` → {row['pr_url']}"
@@ -572,6 +831,7 @@ async def _handle_button(interaction: "Any", http_session: ClientSession) -> Non
     elif action == "reject":
         _, msg = await _close_pr(http_session, row["repo"], row["pr_number"])
         _set_proposal_status(proposal_id, "rejected", actor, msg)
+        await _retain_proposal_outcome(http_session, row, "rejected", actor, msg)
         await interaction.response.send_message(
             f":no_entry: **Rejected** by {actor} — {msg}\n"
             f"`{row['alertname']}` → {row['pr_url']}"
@@ -584,6 +844,9 @@ async def _handle_button(interaction: "Any", http_session: ClientSession) -> Non
     elif action == "revise":
         _set_proposal_status(
             proposal_id, "needs-revision", actor, "human requested revision"
+        )
+        await _retain_proposal_outcome(
+            http_session, row, "needs-revision", actor, ""
         )
         await _post_changelog(
             http_session,
@@ -659,7 +922,9 @@ async def _triage(session: ClientSession, alert: dict[str, Any]) -> None:
     await _post_discord(session, webhook, _investigating)
     await _post_slack(session, slack_channel, _investigating)
 
-    analysis = await _investigate(session, alert)
+    history = await _recall_incidents(session, alert)
+    analysis = await _investigate(session, alert, history)
+    await _retain_triage(session, alert, fp, analysis)
 
     # Phase 4: if Holmes opened a PR, create a proposal row and post the
     # triage with Approve/Reject/Revise buttons. Otherwise plain triage.
@@ -762,12 +1027,15 @@ async def _handle_webhook(request: web.Request) -> web.Response:
 
     session = request.app["session"]
     for alert in payload.get("alerts", []):
-        if alert.get("status") != "firing":
-            continue
         severity = alert.get("labels", {}).get("severity", "").lower()
         if severity not in INVESTIGATE_SEVERITIES:
             continue
-        asyncio.create_task(_triage(session, alert))
+        status = alert.get("status")
+        if status == "firing":
+            asyncio.create_task(_triage(session, alert))
+        elif status == "resolved" and HINDSIGHT_URL:
+            # Needs Alertmanager send_resolved: true on the argus receiver.
+            asyncio.create_task(_retain_resolution(session, alert))
 
     return web.Response(text="queued")
 
@@ -829,6 +1097,7 @@ async def _handle_proposal_action(request: web.Request) -> web.Response:
     updated = _set_proposal_status(
         proposal_id, status, actor, f"{note} ({msg})".strip()
     )
+    await _retain_proposal_outcome(session, row, status, actor, f"{note} ({msg})".strip())
     emoji = ":white_check_mark:" if action == "approve" else ":no_entry:"
     await _post_changelog(
         session,

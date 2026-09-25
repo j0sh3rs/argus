@@ -84,6 +84,23 @@ forwarder:
     info: {}
     deals: {}
 
+  # --- Phase 6: incident memory via Hindsight (optional) ---
+  # When url is set, each triage first recalls prior incidents from a
+  # Hindsight bank into the Holmes prompt, then retains the triage summary.
+  # Resolved alerts (needs send_resolved: true on the Alertmanager receiver)
+  # and proposal approve/reject/revise outcomes are retained too. Empty url
+  # = feature off. apiKeySecret is a {name,key} secretKeyRef for the bearer
+  # key (omit for an unauthenticated Hindsight).
+  hindsight:
+    url: ""  # e.g. http://hindsight-api.hindsight.svc.cluster.local:8888
+    bank: incidents
+    # Cap on recalled text injected into the prompt (context budget).
+    recallMaxChars: 1500
+    timeoutSec: 20
+    apiKeySecret: {}
+      # name: argus-forwarder
+      # key: HINDSIGHT_API_KEY
+
   # --- Phase 3: project-agnostic repo mapping ---
   # Maps k8s namespace → GitHub repo (owner/repo). Holmes uses this to
   # know where to open fix PRs. `default` is the fallback for unmapped

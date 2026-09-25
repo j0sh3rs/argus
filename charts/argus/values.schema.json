@@ -208,6 +208,36 @@
           "additionalProperties": {
             "type": "string"
           }
+        },
+        "hindsight": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string"
+            },
+            "bank": {
+              "type": "string"
+            },
+            "recallMaxChars": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "timeoutSec": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "apiKeySecret": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "key": {
+                  "type": "string"
+                }
+              }
+            }
+          }
         }
       },
       "required": [

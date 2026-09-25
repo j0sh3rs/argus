@@ -164,6 +164,26 @@ spec:
                   optional: true
             {{- end }}
             {{- end }}
+            # --- Incident memory (Hindsight) ---
+            {{- with .Values.forwarder.hindsight }}
+            {{- if .url }}
+            - name: HINDSIGHT_URL
+              value: {{ .url | quote }}
+            - name: HINDSIGHT_BANK
+              value: {{ .bank | default "incidents" | quote }}
+            - name: HINDSIGHT_RECALL_MAX_CHARS
+              value: {{ .recallMaxChars | default 1500 | quote }}
+            - name: HINDSIGHT_TIMEOUT_SEC
+              value: {{ .timeoutSec | default 20 | quote }}
+            {{- if .apiKeySecret }}
+            - name: HINDSIGHT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .apiKeySecret.name | quote }}
+                  key: {{ .apiKeySecret.key | quote }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
             - name: PROPOSALS_DB
               value: {{ .Values.forwarder.proposalsDbPath | default "/data/proposals.db" | quote }}
           ports:
